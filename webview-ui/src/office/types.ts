@@ -63,6 +63,50 @@ export interface ToolActivity {
   permissionWait?: boolean
 }
 
+export const FurnitureType = {
+  DESK: 'desk',
+  BOOKSHELF: 'bookshelf',
+  PLANT: 'plant',
+  COOLER: 'cooler',
+  WHITEBOARD: 'whiteboard',
+  CHAIR: 'chair',
+  PC: 'pc',
+  LAMP: 'lamp',
+} as const
+export type FurnitureType = (typeof FurnitureType)[keyof typeof FurnitureType]
+
+export const EditTool = {
+  TILE_PAINT: 'tile_paint',
+  FURNITURE_PLACE: 'furniture_place',
+  SELECT: 'select',
+  ERASER: 'eraser',
+} as const
+export type EditTool = (typeof EditTool)[keyof typeof EditTool]
+
+export interface FurnitureCatalogEntry {
+  type: FurnitureType
+  label: string
+  footprintW: number
+  footprintH: number
+  sprite: SpriteData
+  isDesk: boolean
+}
+
+export interface PlacedFurniture {
+  uid: string
+  type: FurnitureType
+  col: number
+  row: number
+}
+
+export interface OfficeLayout {
+  version: 1
+  cols: number
+  rows: number
+  tiles: TileType[]
+  furniture: PlacedFurniture[]
+}
+
 export interface Character {
   id: number
   state: CharacterState

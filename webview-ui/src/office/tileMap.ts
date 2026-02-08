@@ -156,24 +156,24 @@ export function isWalkable(
   col: number,
   row: number,
   tileMap: TileType[][],
-  deskTiles: Set<string>,
+  blockedTiles: Set<string>,
 ): boolean {
   if (row < 0 || row >= MAP_ROWS || col < 0 || col >= MAP_COLS) return false
   const t = tileMap[row][col]
   if (t === TileType.WALL) return false
-  if (deskTiles.has(`${col},${row}`)) return false
+  if (blockedTiles.has(`${col},${row}`)) return false
   return true
 }
 
 /** Get walkable tile positions (grid coords) for wandering */
 export function getWalkableTiles(
   tileMap: TileType[][],
-  deskTiles: Set<string>,
+  blockedTiles: Set<string>,
 ): Array<{ col: number; row: number }> {
   const tiles: Array<{ col: number; row: number }> = []
   for (let r = 0; r < MAP_ROWS; r++) {
     for (let c = 0; c < MAP_COLS; c++) {
-      if (isWalkable(c, r, tileMap, deskTiles)) {
+      if (isWalkable(c, r, tileMap, blockedTiles)) {
         tiles.push({ col: c, row: r })
       }
     }
@@ -188,7 +188,7 @@ export function findPath(
   endCol: number,
   endRow: number,
   tileMap: TileType[][],
-  deskTiles: Set<string>,
+  blockedTiles: Set<string>,
 ): Array<{ col: number; row: number }> {
   if (startCol === endCol && startRow === endRow) return []
 
@@ -198,7 +198,7 @@ export function findPath(
 
   // End must be walkable (or be a chair tile which may be adjacent to desk)
   // We allow the end tile even if it's not strictly walkable for chair positions
-  const endWalkable = isWalkable(endCol, endRow, tileMap, deskTiles)
+  const endWalkable = isWalkable(endCol, endRow, tileMap, blockedTiles)
   if (!endWalkable) {
     // If the end is a desk tile, we still can't path there
     return []
@@ -239,7 +239,7 @@ export function findPath(
       const nk = key(nc, nr)
 
       if (visited.has(nk)) continue
-      if (!isWalkable(nc, nr, tileMap, deskTiles)) continue
+      if (!isWalkable(nc, nr, tileMap, blockedTiles)) continue
 
       visited.add(nk)
       parent.set(nk, currKey)

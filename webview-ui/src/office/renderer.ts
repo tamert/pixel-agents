@@ -1,5 +1,5 @@
 import { TileType, TILE_SIZE, SCALE, MAP_COLS, MAP_ROWS } from './types.js'
-import type { TileType as TileTypeVal, FurnitureInstance, Character } from './types.js'
+import type { TileType as TileTypeVal, FurnitureInstance, Character, SpriteData } from './types.js'
 import { getCachedSprite } from './spriteCache.js'
 import { getCharacterSprites } from './sprites.js'
 import { getCharacterSprite } from './characters.js'
@@ -97,6 +97,89 @@ export function renderScene(
   }
 }
 
+// ── Edit mode overlays ──────────────────────────────────────────
+
+export function renderGridOverlay(
+  ctx: CanvasRenderingContext2D,
+  offsetX: number,
+  offsetY: number,
+): void {
+  const s = TILE_SIZE * SCALE
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)'
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  // Vertical lines
+  for (let c = 0; c <= MAP_COLS; c++) {
+    const x = offsetX + c * s
+    ctx.moveTo(x, offsetY)
+    ctx.lineTo(x, offsetY + MAP_ROWS * s)
+  }
+  // Horizontal lines
+  for (let r = 0; r <= MAP_ROWS; r++) {
+    const y = offsetY + r * s
+    ctx.moveTo(offsetX, y)
+    ctx.lineTo(offsetX + MAP_COLS * s, y)
+  }
+  ctx.stroke()
+}
+
+export function renderGhostPreview(
+  ctx: CanvasRenderingContext2D,
+  sprite: SpriteData,
+  col: number,
+  row: number,
+  valid: boolean,
+  offsetX: number,
+  offsetY: number,
+): void {
+  const cached = getCachedSprite(sprite)
+  const x = offsetX + col * TILE_SIZE * SCALE
+  const y = offsetY + row * TILE_SIZE * SCALE
+  ctx.save()
+  ctx.globalAlpha = 0.5
+  ctx.drawImage(cached, x, y)
+  // Tint overlay
+  ctx.globalAlpha = 0.25
+  ctx.fillStyle = valid ? '#00ff00' : '#ff0000'
+  ctx.fillRect(x, y, cached.width, cached.height)
+  ctx.restore()
+}
+
+export function renderSelectionHighlight(
+  ctx: CanvasRenderingContext2D,
+  col: number,
+  row: number,
+  w: number,
+  h: number,
+  offsetX: number,
+  offsetY: number,
+): void {
+  const s = TILE_SIZE * SCALE
+  const x = offsetX + col * s
+  const y = offsetY + row * s
+  ctx.save()
+  ctx.strokeStyle = 'var(--vscode-focusBorder, #007fd4)'
+  // Fallback since CSS vars don't work in canvas
+  ctx.strokeStyle = '#007fd4'
+  ctx.lineWidth = 2
+  ctx.setLineDash([4, 3])
+  ctx.strokeRect(x + 1, y + 1, w * s - 2, h * s - 2)
+  ctx.restore()
+}
+
+export interface EditorRenderState {
+  showGrid: boolean
+  ghostSprite: SpriteData | null
+  ghostCol: number
+  ghostRow: number
+  ghostValid: boolean
+  selectedCol: number
+  selectedRow: number
+  selectedW: number
+  selectedH: number
+  hasSelection: boolean
+}
+
 export function renderFrame(
   ctx: CanvasRenderingContext2D,
   canvasWidth: number,
@@ -104,6 +187,7 @@ export function renderFrame(
   tileMap: TileTypeVal[][],
   furniture: FurnitureInstance[],
   characters: Character[],
+  editor?: EditorRenderState,
 ): { offsetX: number; offsetY: number } {
   // Clear
   ctx.clearRect(0, 0, canvasWidth, canvasHeight)
@@ -119,6 +203,19 @@ export function renderFrame(
 
   // Draw furniture + characters (z-sorted)
   renderScene(ctx, furniture, characters, offsetX, offsetY)
+
+  // Editor overlays
+  if (editor) {
+    if (editor.showGrid) {
+      renderGridOverlay(ctx, offsetX, offsetY)
+    }
+    if (editor.ghostSprite && editor.ghostCol >= 0 && editor.ghostRow >= 0) {
+      renderGhostPreview(ctx, editor.ghostSprite, editor.ghostCol, editor.ghostRow, editor.ghostValid, offsetX, offsetY)
+    }
+    if (editor.hasSelection) {
+      renderSelectionHighlight(ctx, editor.selectedCol, editor.selectedRow, editor.selectedW, editor.selectedH, offsetX, offsetY)
+    }
+  }
 
   return { offsetX, offsetY }
 }

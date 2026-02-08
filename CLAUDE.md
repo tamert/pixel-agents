@@ -118,7 +118,7 @@ pollingTimers        — agentId → setInterval (2s backup file polling)
 waitingTimers        — agentId → setTimeout (2s debounce for "waiting" status)
 ```
 
-**Persistence**: Agent-to-terminal mappings are persisted to `workspaceState` (key `'arcadia.agents'`) as `PersistedAgent[]`. On webview ready, `restoreAgents()` reads persisted state, matches each entry to a live terminal by name, and recreates the `AgentState`. File watching resumes from end-of-file (no replay). Entries whose terminals no longer exist are pruned. `nextAgentId` and `nextTerminalIndex` are advanced past restored values to avoid collisions.
+**Persistence**: Agent-to-terminal mappings are persisted to `workspaceState` (key `'arcadia.agents'`) as `PersistedAgent[]`. Office layout is persisted to `workspaceState` (key `'arcadia.layout'`). On webview ready, `restoreAgents()` reads persisted state, matches each entry to a live terminal by name, and recreates the `AgentState`. File watching resumes from end-of-file (no replay). Entries whose terminals no longer exist are pruned. `nextAgentId` and `nextTerminalIndex` are advanced past restored values to avoid collisions. `sendLayout()` sends the persisted layout (or null for default) to the webview.
 
 ## Office UI (Pixel Art Scene)
 
@@ -130,21 +130,26 @@ All files live under `webview-ui/src/office/`:
 
 ```
 office/
-  types.ts          — Constants (TILE_SIZE=16, SCALE=2, MAP 20x11), interfaces
-  sprites.ts        — Hardcoded pixel data for characters (6 palettes), furniture, tiles
-  spriteCache.ts    — Renders SpriteData → offscreen canvas, WeakMap cache by reference
-  tileMap.ts        — Office layout grid, desk slot positions, furniture placement
-  gameLoop.ts       — requestAnimationFrame loop with delta time (capped at 0.1s)
-  renderer.ts       — Canvas drawing: tiles (checkerboard), z-sorted furniture + characters
-  characters.ts     — Character state machine: idle/walk/type + wander AI
-  officeState.ts    — Central game world, bridges messages → character lifecycle
-  OfficeCanvas.tsx  — React component: canvas ref, ResizeObserver, DPR, mouse hit-testing
-  ToolOverlay.tsx   — HTML tooltip positioned over hovered character showing tool status
+  types.ts            — Constants (TILE_SIZE=16, SCALE=2, MAP 20x11), interfaces, FurnitureType, EditTool, OfficeLayout
+  sprites.ts          — Hardcoded pixel data for characters (6 palettes), furniture, tiles (desk, bookshelf, plant, cooler, whiteboard, chair, PC, lamp)
+  spriteCache.ts      — Renders SpriteData → offscreen canvas, WeakMap cache by reference
+  furnitureCatalog.ts — FurnitureType → sprite/footprint/isDesk catalog + getCatalogEntry()
+  layoutSerializer.ts — OfficeLayout ↔ runtime conversion (tileMap, furniture instances, desk slots, blocked tiles)
+  editorActions.ts    — Pure layout manipulation: paintTile, placeFurniture, removeFurniture, moveFurniture, canPlaceFurniture
+  editorState.ts      — Imperative editor state class (tools, ghost preview, selection, undo stack)
+  EditorToolbar.tsx   — React toolbar/palette component for edit mode
+  tileMap.ts          — Office layout grid, desk slot positions, furniture placement, pathfinding (param renamed: deskTiles → blockedTiles)
+  gameLoop.ts         — requestAnimationFrame loop with delta time (capped at 0.1s)
+  renderer.ts         — Canvas drawing: tiles, z-sorted furniture + characters, edit overlays (grid, ghost, selection)
+  characters.ts       — Character state machine: idle/walk/type + wander AI (handles deskSlot=-1 for no-desk case)
+  officeState.ts      — Central game world: layout-aware construction, rebuildFromLayout(), bridges messages → character lifecycle
+  OfficeCanvas.tsx    — React component: canvas ref, ResizeObserver, DPR, mouse hit-testing, edit mode tile interactions
+  ToolOverlay.tsx     — HTML tooltip positioned over hovered character showing tool status
 ```
 
 ### How rendering works
 
-**Game state outside React**: An `OfficeState` class (module-level singleton in App.tsx) holds character positions, desk assignments, and animation state. It's updated imperatively by message handlers and read by the canvas every frame. React state is only used for HTML overlays (tool tooltips). This avoids re-renders in the hot path.
+**Game state outside React**: An `OfficeState` class (created lazily on `layoutLoaded`, stored in `officeStateRef`) holds the `OfficeLayout`, derived tile map, furniture instances, desk slots, and character state. It's updated imperatively by message handlers and read by the canvas every frame. React state is only used for HTML overlays (tool tooltips, editor toolbar). This avoids re-renders in the hot path.
 
 **Sprite system**: Pixel data stored as 2D arrays of hex color strings (`SpriteData`). Rendered once to offscreen canvases at SCALE (2x) and cached via `WeakMap`. Characters use palette templates (`'skin'`, `'shirt'`, etc.) resolved at creation time into concrete hex colors. 6 distinct color palettes for agents.
 
@@ -204,6 +209,29 @@ Each desk is 2x2 tiles with 4 chair positions (one per side), facing toward the 
 
 2 desks × 4 chairs = 8 slots total (supports up to 8 agents; 6 palettes cycle).
 
+### Office Layout Editor
+
+Toggle-based edit mode for customizing the office layout:
+
+- **"Edit" button** (top-left, next to + Agent and Sessions) toggles edit mode on/off
+- **Tools**: Select, Paint, Place, Erase, Undo, Reset
+- **Paint tool**: Click/drag to paint floor tiles (Wall, Tile Floor, Wood Floor, Carpet, Doorway)
+- **Place tool**: Click to place furniture from catalog (Desk, Bookshelf, Plant, Cooler, Whiteboard, Chair, PC, Lamp). Ghost preview shows placement validity (green/red tint).
+- **Select tool**: Click furniture to select it (dashed blue border). Press Delete to remove.
+- **Eraser tool**: Click to remove furniture at cursor position
+- **Undo** (Ctrl+Z): Reverts last edit (50-level stack)
+- **Reset**: Returns to default hardcoded office layout
+
+**Layout data model**: `OfficeLayout` = `{ version: 1, cols, rows, tiles: TileType[], furniture: PlacedFurniture[] }`. Flat tile array (row-major). Each `PlacedFurniture` has `uid`, `type`, `col`, `row`.
+
+**Persistence**: Layout saved to `workspaceState` key `'arcadia.layout'` via debounced (500ms) `saveLayout` message. On `webviewReady`, extension sends `layoutLoaded { layout }` to webview. `OfficeState.rebuildFromLayout()` rebuilds all derived state (tileMap, furniture instances, desk slots, blocked tiles, walkable tiles) and reassigns characters to available desks.
+
+**No-desk behavior**: When all desk slots are taken or no desks exist, agents get `deskSlot = -1` and type in place (no pathfinding to desk). When idle, they wander normally.
+
+**Furniture catalog**: `furnitureCatalog.ts` maps each `FurnitureType` to sprite, footprint size, and `isDesk` flag. `layoutSerializer.ts` generates desk slots dynamically from placed desk furniture.
+
+**Edit mode rendering**: Grid overlay (subtle white lines), ghost preview (semi-transparent sprite with green/red validity tint), selection highlight (dashed blue border). Characters keep animating during editing.
+
 ### Interaction
 
 - **Hover** character → `ToolOverlay` tooltip appears showing agent name, active tools (blue pulsing dot), completed tools (green dot, dimmed), permission waits (amber), subagent tools (nested)
@@ -211,6 +239,7 @@ Each desk is 2x2 tiles with 4 chair positions (one per side), facing toward the 
 - **Name labels** float above each character with status dot (blue pulse = active, amber = waiting)
 - **"+ Agent" button** (top-left) creates new terminal + character
 - **"Sessions" button** opens JSONL folder in file explorer
+- **"Edit" button** (top-left) toggles layout editor mode
 
 ### TypeScript constraints
 

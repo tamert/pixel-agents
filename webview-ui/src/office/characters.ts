@@ -69,7 +69,7 @@ export function updateCharacter(
   walkableTiles: Array<{ col: number; row: number }>,
   deskSlots: DeskSlot[],
   tileMap: TileTypeVal[][],
-  deskTiles: Set<string>,
+  blockedTiles: Set<string>,
 ): void {
   ch.frameTimer += dt
 
@@ -96,9 +96,16 @@ export function updateCharacter(
       }
       // If became active, pathfind to desk chair
       if (ch.isActive) {
+        if (ch.deskSlot === -1) {
+          // No desk assigned — type in place
+          ch.state = CharacterState.TYPE
+          ch.frame = 0
+          ch.frameTimer = 0
+          break
+        }
         const slot = deskSlots[ch.deskSlot]
         if (slot) {
-          const path = findPath(ch.tileCol, ch.tileRow, slot.chairCol, slot.chairRow, tileMap, deskTiles)
+          const path = findPath(ch.tileCol, ch.tileRow, slot.chairCol, slot.chairRow, tileMap, blockedTiles)
           if (path.length > 0) {
             ch.path = path
             ch.moveProgress = 0
@@ -120,7 +127,7 @@ export function updateCharacter(
       if (ch.wanderTimer <= 0) {
         if (walkableTiles.length > 0) {
           const target = walkableTiles[Math.floor(Math.random() * walkableTiles.length)]
-          const path = findPath(ch.tileCol, ch.tileRow, target.col, target.row, tileMap, deskTiles)
+          const path = findPath(ch.tileCol, ch.tileRow, target.col, target.row, tileMap, blockedTiles)
           if (path.length > 0) {
             ch.path = path
             ch.moveProgress = 0
@@ -148,12 +155,17 @@ export function updateCharacter(
         ch.y = center.y
 
         if (ch.isActive) {
-          const slot = deskSlots[ch.deskSlot]
-          if (slot && ch.tileCol === slot.chairCol && ch.tileRow === slot.chairRow) {
+          if (ch.deskSlot === -1) {
+            // No desk — type in place
             ch.state = CharacterState.TYPE
-            ch.dir = slot.facingDir
           } else {
-            ch.state = CharacterState.IDLE
+            const slot = deskSlots[ch.deskSlot]
+            if (slot && ch.tileCol === slot.chairCol && ch.tileRow === slot.chairRow) {
+              ch.state = CharacterState.TYPE
+              ch.dir = slot.facingDir
+            } else {
+              ch.state = CharacterState.IDLE
+            }
           }
         } else {
           ch.state = CharacterState.IDLE
@@ -187,12 +199,12 @@ export function updateCharacter(
       }
 
       // If became active while wandering, repath to desk
-      if (ch.isActive) {
+      if (ch.isActive && ch.deskSlot >= 0) {
         const slot = deskSlots[ch.deskSlot]
         if (slot) {
           const lastStep = ch.path[ch.path.length - 1]
           if (!lastStep || lastStep.col !== slot.chairCol || lastStep.row !== slot.chairRow) {
-            const newPath = findPath(ch.tileCol, ch.tileRow, slot.chairCol, slot.chairRow, tileMap, deskTiles)
+            const newPath = findPath(ch.tileCol, ch.tileRow, slot.chairCol, slot.chairRow, tileMap, blockedTiles)
             if (newPath.length > 0) {
               ch.path = newPath
               ch.moveProgress = 0

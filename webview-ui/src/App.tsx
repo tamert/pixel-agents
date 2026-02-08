@@ -2,13 +2,21 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { OfficeState } from './office/officeState.js'
 import { OfficeCanvas } from './office/OfficeCanvas.js'
 import { ToolOverlay } from './office/ToolOverlay.js'
+import { EditorToolbar } from './office/EditorToolbar.js'
+import { EditorState } from './office/editorState.js'
+import { EditTool } from './office/types.js'
+import type { OfficeLayout, FurnitureType, EditTool as EditToolType, TileType as TileTypeVal } from './office/types.js'
+import { createDefaultLayout } from './office/layoutSerializer.js'
+import { paintTile, placeFurniture, removeFurniture, canPlaceFurniture } from './office/editorActions.js'
+import { getCatalogEntry } from './office/furnitureCatalog.js'
 
 declare function acquireVsCodeApi(): { postMessage(msg: unknown): void }
 
 const vscode = acquireVsCodeApi()
 
 // Game state lives outside React — updated imperatively by message handlers
-const officeState = new OfficeState()
+const officeStateRef = { current: null as OfficeState | null }
+const editorState = new EditorState()
 
 /** Map status prefixes back to tool names for animation selection */
 const STATUS_TO_TOOL: Record<string, string> = {
@@ -27,7 +35,6 @@ function extractToolName(status: string): string | null {
   for (const [prefix, tool] of Object.entries(STATUS_TO_TOOL)) {
     if (status.startsWith(prefix)) return tool
   }
-  // Fallback: first word might be the tool name
   const first = status.split(/[\s:]/)[0]
   return first || null
 }
@@ -39,26 +46,60 @@ interface ToolActivity {
   permissionWait?: boolean
 }
 
+function getOfficeState(): OfficeState {
+  if (!officeStateRef.current) {
+    officeStateRef.current = new OfficeState()
+  }
+  return officeStateRef.current
+}
+
 function App() {
   const [agents, setAgents] = useState<number[]>([])
   const [, setSelectedAgent] = useState<number | null>(null)
   const [agentTools, setAgentTools] = useState<Record<number, ToolActivity[]>>({})
   const [agentStatuses, setAgentStatuses] = useState<Record<number, string>>({})
   const [subagentTools, setSubagentTools] = useState<Record<number, Record<string, ToolActivity[]>>>({})
-
-  // Hover state for overlay
+  const [isEditMode, setIsEditMode] = useState(false)
+  const [editorTick, setEditorTick] = useState(0) // force re-render for editor state changes
   const [hoveredAgent, setHoveredAgent] = useState<number | null>(null)
   const [hoverPos, setHoverPos] = useState({ x: 0, y: 0 })
+  const [layoutReady, setLayoutReady] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Debounced layout save
+  const saveLayout = useCallback((layout: OfficeLayout) => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+    saveTimerRef.current = setTimeout(() => {
+      vscode.postMessage({ type: 'saveLayout', layout })
+    }, 500)
+  }, [])
+
+  // Apply a layout edit: push undo, rebuild state, save
+  const applyEdit = useCallback((newLayout: OfficeLayout) => {
+    const os = getOfficeState()
+    editorState.pushUndo(os.getLayout())
+    os.rebuildFromLayout(newLayout)
+    saveLayout(newLayout)
+    setEditorTick((n) => n + 1)
+  }, [saveLayout])
 
   useEffect(() => {
     const handler = (e: MessageEvent) => {
       const msg = e.data
-      if (msg.type === 'agentCreated') {
+      const os = getOfficeState()
+
+      if (msg.type === 'layoutLoaded') {
+        const layout = msg.layout as OfficeLayout | null
+        if (layout && layout.version === 1) {
+          os.rebuildFromLayout(layout)
+        }
+        setLayoutReady(true)
+      } else if (msg.type === 'agentCreated') {
         const id = msg.id as number
         setAgents((prev) => (prev.includes(id) ? prev : [...prev, id]))
         setSelectedAgent(id)
-        officeState.addAgent(id)
+        os.addAgent(id)
       } else if (msg.type === 'agentClosed') {
         const id = msg.id as number
         setAgents((prev) => prev.filter((a) => a !== id))
@@ -81,7 +122,7 @@ function App() {
           delete next[id]
           return next
         })
-        officeState.removeAgent(id)
+        os.removeAgent(id)
       } else if (msg.type === 'existingAgents') {
         const incoming = msg.agents as number[]
         setAgents((prev) => {
@@ -90,7 +131,7 @@ function App() {
           for (const id of incoming) {
             if (!ids.has(id)) {
               merged.push(id)
-              officeState.addAgent(id)
+              os.addAgent(id)
             }
           }
           return merged.sort((a, b) => a - b)
@@ -104,11 +145,9 @@ function App() {
           if (list.some((t) => t.toolId === toolId)) return prev
           return { ...prev, [id]: [...list, { toolId, status, done: false }] }
         })
-        // Extract tool name from status (e.g. "Reading src/App.tsx" → "Read")
         const toolName = extractToolName(status)
-        officeState.setAgentTool(id, toolName)
-        // Agent is active (working)
-        officeState.setAgentActive(id, true)
+        os.setAgentTool(id, toolName)
+        os.setAgentActive(id, true)
       } else if (msg.type === 'agentToolDone') {
         const id = msg.id as number
         const toolId = msg.toolId as string
@@ -134,7 +173,7 @@ function App() {
           delete next[id]
           return next
         })
-        officeState.setAgentTool(id, null)
+        os.setAgentTool(id, null)
       } else if (msg.type === 'agentSelected') {
         const id = msg.id as number
         setSelectedAgent(id)
@@ -150,8 +189,7 @@ function App() {
           }
           return { ...prev, [id]: status }
         })
-        // Update office state: waiting = not active, active = active
-        officeState.setAgentActive(id, status === 'active')
+        os.setAgentActive(id, status === 'active')
       } else if (msg.type === 'agentToolPermission') {
         const id = msg.id as number
         setAgentTools((prev) => {
@@ -221,6 +259,27 @@ function App() {
     return () => window.removeEventListener('message', handler)
   }, [])
 
+  // Keyboard handlers for edit mode
+  useEffect(() => {
+    if (!isEditMode) return
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        editorState.clearSelection()
+        editorState.clearGhost()
+        setEditorTick((n) => n + 1)
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (editorState.selectedFurnitureUid) {
+          handleDeleteSelected()
+        }
+      } else if (e.key === 'z' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault()
+        handleUndo()
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [isEditMode])
+
   const handleOpenClaude = () => {
     vscode.postMessage({ type: 'openClaude' })
   }
@@ -234,6 +293,119 @@ function App() {
     setSelectedAgent(agentId)
     vscode.postMessage({ type: 'focusAgent', id: agentId })
   }, [])
+
+  // Editor callbacks
+  const handleToolChange = useCallback((tool: EditToolType) => {
+    editorState.activeTool = tool
+    editorState.clearSelection()
+    editorState.clearGhost()
+    setEditorTick((n) => n + 1)
+  }, [])
+
+  const handleTileTypeChange = useCallback((type: TileTypeVal) => {
+    editorState.selectedTileType = type
+    setEditorTick((n) => n + 1)
+  }, [])
+
+  const handleFurnitureTypeChange = useCallback((type: FurnitureType) => {
+    editorState.selectedFurnitureType = type
+    setEditorTick((n) => n + 1)
+  }, [])
+
+  const handleDeleteSelected = useCallback(() => {
+    const uid = editorState.selectedFurnitureUid
+    if (!uid) return
+    const os = getOfficeState()
+    const newLayout = removeFurniture(os.getLayout(), uid)
+    if (newLayout !== os.getLayout()) {
+      applyEdit(newLayout)
+      editorState.clearSelection()
+    }
+  }, [applyEdit])
+
+  const handleUndo = useCallback(() => {
+    const prev = editorState.popUndo()
+    if (!prev) return
+    const os = getOfficeState()
+    os.rebuildFromLayout(prev)
+    saveLayout(prev)
+    setEditorTick((n) => n + 1)
+  }, [saveLayout])
+
+  const handleReset = useCallback(() => {
+    const defaultLayout = createDefaultLayout()
+    applyEdit(defaultLayout)
+    editorState.reset()
+  }, [applyEdit])
+
+  const handleToggleEditMode = useCallback(() => {
+    setIsEditMode((prev) => {
+      const next = !prev
+      editorState.isEditMode = next
+      if (!next) {
+        editorState.clearSelection()
+        editorState.clearGhost()
+      }
+      return next
+    })
+  }, [])
+
+  // Edit mode tile click/drag handler
+  const handleEditorTileAction = useCallback((col: number, row: number) => {
+    const os = getOfficeState()
+    const layout = os.getLayout()
+
+    if (editorState.activeTool === EditTool.TILE_PAINT) {
+      const newLayout = paintTile(layout, col, row, editorState.selectedTileType)
+      if (newLayout !== layout) {
+        applyEdit(newLayout)
+      }
+    } else if (editorState.activeTool === EditTool.FURNITURE_PLACE) {
+      const type = editorState.selectedFurnitureType
+      if (canPlaceFurniture(layout, type, col, row)) {
+        const uid = `f-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+        const newLayout = placeFurniture(layout, { uid, type, col, row })
+        if (newLayout !== layout) {
+          applyEdit(newLayout)
+        }
+      }
+    } else if (editorState.activeTool === EditTool.ERASER) {
+      // Find and remove furniture at this tile
+      const hit = layout.furniture.find((f) => {
+        const entry = getCatalogEntry(f.type)
+        if (!entry) return false
+        return col >= f.col && col < f.col + entry.footprintW && row >= f.row && row < f.row + entry.footprintH
+      })
+      if (hit) {
+        const newLayout = removeFurniture(layout, hit.uid)
+        if (newLayout !== layout) {
+          applyEdit(newLayout)
+        }
+      }
+    } else if (editorState.activeTool === EditTool.SELECT) {
+      // Select furniture at this tile
+      const hit = layout.furniture.find((f) => {
+        const entry = getCatalogEntry(f.type)
+        if (!entry) return false
+        return col >= f.col && col < f.col + entry.footprintW && row >= f.row && row < f.row + entry.footprintH
+      })
+      editorState.selectedFurnitureUid = hit ? hit.uid : null
+      setEditorTick((n) => n + 1)
+    }
+  }, [applyEdit])
+
+  // _editorTick is used for dependency tracking to force re-renders
+  const _editorTick = editorTick
+
+  const officeState = getOfficeState()
+
+  if (!layoutReady) {
+    return (
+      <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--vscode-foreground)' }}>
+        Loading...
+      </div>
+    )
+  }
 
   return (
     <div ref={containerRef} style={{ width: '100%', height: '100%', position: 'relative', overflow: 'hidden' }}>
@@ -250,6 +422,10 @@ function App() {
         officeState={officeState}
         onHover={handleHover}
         onClick={handleClick}
+        isEditMode={isEditMode}
+        editorState={editorState}
+        onEditorTileAction={handleEditorTileAction}
+        editorTick={_editorTick}
       />
 
       {/* Floating buttons in top-left corner */}
@@ -294,7 +470,43 @@ function App() {
         >
           Sessions
         </button>
+        <button
+          onClick={handleToggleEditMode}
+          style={{
+            padding: '5px 10px',
+            fontSize: '12px',
+            background: isEditMode
+              ? 'var(--vscode-button-background)'
+              : 'var(--vscode-button-secondaryBackground, #3A3D41)',
+            color: isEditMode
+              ? 'var(--vscode-button-foreground)'
+              : 'var(--vscode-button-secondaryForeground, #ccc)',
+            border: isEditMode ? '1px solid var(--vscode-focusBorder, #007fd4)' : 'none',
+            borderRadius: 3,
+            cursor: 'pointer',
+            opacity: 0.9,
+          }}
+          title="Toggle edit mode"
+        >
+          Edit
+        </button>
       </div>
+
+      {/* Editor toolbar */}
+      {isEditMode && (
+        <EditorToolbar
+          activeTool={editorState.activeTool}
+          selectedTileType={editorState.selectedTileType}
+          selectedFurnitureType={editorState.selectedFurnitureType}
+          selectedFurnitureUid={editorState.selectedFurnitureUid}
+          onToolChange={handleToolChange}
+          onTileTypeChange={handleTileTypeChange}
+          onFurnitureTypeChange={handleFurnitureTypeChange}
+          onDeleteSelected={handleDeleteSelected}
+          onUndo={handleUndo}
+          onReset={handleReset}
+        />
+      )}
 
       {/* Agent name labels above characters */}
       <AgentLabels officeState={officeState} agents={agents} agentStatuses={agentStatuses} containerRef={containerRef} />
@@ -324,7 +536,6 @@ function AgentLabels({
   agentStatuses: Record<number, string>
   containerRef: React.RefObject<HTMLDivElement | null>
 }) {
-  // Re-render on animation frame for smooth label positioning
   const [, setTick] = useState(0)
   useEffect(() => {
     let rafId = 0
@@ -336,7 +547,6 @@ function AgentLabels({
     return () => cancelAnimationFrame(rafId)
   }, [])
 
-  // Compute map offset from container size
   const el = containerRef.current
   if (!el) return null
   const rect = el.getBoundingClientRect()
@@ -358,7 +568,6 @@ function AgentLabels({
         const isWaiting = status === 'waiting'
         const isActive = ch.isActive
 
-        // Status dot color
         let dotColor = 'transparent'
         if (isWaiting) {
           dotColor = 'var(--vscode-charts-yellow, #cca700)'

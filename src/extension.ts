@@ -70,9 +70,12 @@ class ArcadiaViewProvider implements vscode.WebviewViewProvider {
 				if (agent) {
 					agent.terminalRef.dispose();
 				}
+			} else if (message.type === 'saveLayout') {
+				this.context.workspaceState.update('arcadia.layout', message.layout);
 			} else if (message.type === 'webviewReady') {
 				this.restoreAgents();
 				this.sendExistingAgents();
+				this.sendLayout();
 			} else if (message.type === 'openSessionsFolder') {
 				const projectDir = this.getProjectDirPath();
 				if (projectDir && fs.existsSync(projectDir)) {
@@ -408,6 +411,15 @@ class ArcadiaViewProvider implements vscode.WebviewViewProvider {
 				});
 			}
 		}
+	}
+
+	private sendLayout() {
+		if (!this.webviewView) { return; }
+		const layout = this.context.workspaceState.get('arcadia.layout', null);
+		this.webviewView.webview.postMessage({
+			type: 'layoutLoaded',
+			layout,
+		});
 	}
 
 	// --- Transcript JSONL reading ---
