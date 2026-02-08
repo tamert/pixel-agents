@@ -8,6 +8,7 @@ interface ToolActivity {
   toolId: string
   status: string
   done: boolean
+  permissionWait?: boolean
 }
 
 function App() {
@@ -15,6 +16,8 @@ function App() {
   const [selectedAgent, setSelectedAgent] = useState<number | null>(null)
   const [agentTools, setAgentTools] = useState<Record<number, ToolActivity[]>>({})
   const [agentStatuses, setAgentStatuses] = useState<Record<number, string>>({})
+  // agentId → parentToolId → sub-tools
+  const [subagentTools, setSubagentTools] = useState<Record<number, Record<string, ToolActivity[]>>>({})
 
   useEffect(() => {
     const handler = (e: MessageEvent) => {
@@ -34,6 +37,12 @@ function App() {
           return next
         })
         setAgentStatuses((prev) => {
+          if (!(id in prev)) return prev
+          const next = { ...prev }
+          delete next[id]
+          return next
+        })
+        setSubagentTools((prev) => {
           if (!(id in prev)) return prev
           const next = { ...prev }
           delete next[id]
@@ -79,6 +88,12 @@ function App() {
           delete next[id]
           return next
         })
+        setSubagentTools((prev) => {
+          if (!(id in prev)) return prev
+          const next = { ...prev }
+          delete next[id]
+          return next
+        })
       } else if (msg.type === 'agentSelected') {
         const id = msg.id as number
         setSelectedAgent(id)
@@ -93,6 +108,68 @@ function App() {
             return next
           }
           return { ...prev, [id]: status }
+        })
+      } else if (msg.type === 'agentToolPermission') {
+        const id = msg.id as number
+        setAgentTools((prev) => {
+          const list = prev[id]
+          if (!list) return prev
+          return {
+            ...prev,
+            [id]: list.map((t) => (t.done ? t : { ...t, permissionWait: true })),
+          }
+        })
+      } else if (msg.type === 'agentToolPermissionClear') {
+        const id = msg.id as number
+        setAgentTools((prev) => {
+          const list = prev[id]
+          if (!list) return prev
+          const hasPermission = list.some((t) => t.permissionWait)
+          if (!hasPermission) return prev
+          return {
+            ...prev,
+            [id]: list.map((t) => (t.permissionWait ? { ...t, permissionWait: false } : t)),
+          }
+        })
+      } else if (msg.type === 'subagentToolStart') {
+        const id = msg.id as number
+        const parentToolId = msg.parentToolId as string
+        const toolId = msg.toolId as string
+        const status = msg.status as string
+        setSubagentTools((prev) => {
+          const agentSubs = prev[id] || {}
+          const list = agentSubs[parentToolId] || []
+          if (list.some((t) => t.toolId === toolId)) return prev
+          return { ...prev, [id]: { ...agentSubs, [parentToolId]: [...list, { toolId, status, done: false }] } }
+        })
+      } else if (msg.type === 'subagentToolDone') {
+        const id = msg.id as number
+        const parentToolId = msg.parentToolId as string
+        const toolId = msg.toolId as string
+        setSubagentTools((prev) => {
+          const agentSubs = prev[id]
+          if (!agentSubs) return prev
+          const list = agentSubs[parentToolId]
+          if (!list) return prev
+          return {
+            ...prev,
+            [id]: { ...agentSubs, [parentToolId]: list.map((t) => (t.toolId === toolId ? { ...t, done: true } : t)) },
+          }
+        })
+      } else if (msg.type === 'subagentClear') {
+        const id = msg.id as number
+        const parentToolId = msg.parentToolId as string
+        setSubagentTools((prev) => {
+          const agentSubs = prev[id]
+          if (!agentSubs || !(parentToolId in agentSubs)) return prev
+          const next = { ...agentSubs }
+          delete next[parentToolId]
+          if (Object.keys(next).length === 0) {
+            const outer = { ...prev }
+            delete outer[id]
+            return outer
+          }
+          return { ...prev, [id]: next }
         })
       }
     }
@@ -110,9 +187,44 @@ function App() {
     vscode.postMessage({ type: 'openClaude' })
   }
 
+  const renderToolDot = (tool: ToolActivity) => (
+    <span
+      className={tool.done ? undefined : 'arcadia-pulse'}
+      style={{
+        width: 6,
+        height: 6,
+        borderRadius: '50%',
+        background: tool.done
+          ? 'var(--vscode-charts-green, #89d185)'
+          : tool.permissionWait
+            ? 'var(--vscode-charts-yellow, #cca700)'
+            : 'var(--vscode-charts-blue, #3794ff)',
+        display: 'inline-block',
+        flexShrink: 0,
+      }}
+    />
+  )
+
+  const renderToolLine = (tool: ToolActivity) => (
+    <span
+      key={tool.toolId}
+      style={{
+        fontSize: '11px',
+        opacity: tool.done ? 0.5 : 0.8,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 5,
+      }}
+    >
+      {renderToolDot(tool)}
+      {tool.permissionWait && !tool.done ? 'Needs approval' : tool.status}
+    </span>
+  )
+
   const renderAgentCard = (id: number) => {
     const isSelected = selectedAgent === id
     const tools = agentTools[id] || []
+    const subs = subagentTools[id] || {}
     const status = agentStatuses[id]
     const hasActiveTools = tools.some((t) => !t.done)
     return (
@@ -157,31 +269,24 @@ function App() {
         {(tools.length > 0 || status === 'waiting') && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 1, marginTop: 4, paddingLeft: 4 }}>
             {tools.map((tool) => (
-              <span
-                key={tool.toolId}
-                style={{
-                  fontSize: '11px',
-                  opacity: tool.done ? 0.5 : 0.8,
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 5,
-                }}
-              >
-                <span
-                  className={tool.done ? undefined : 'arcadia-pulse'}
-                  style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: '50%',
-                    background: tool.done
-                      ? 'var(--vscode-charts-green, #89d185)'
-                      : 'var(--vscode-charts-blue, #3794ff)',
-                    display: 'inline-block',
-                    flexShrink: 0,
-                  }}
-                />
-                {tool.status}
-              </span>
+              <div key={tool.toolId}>
+                {renderToolLine(tool)}
+                {subs[tool.toolId] && subs[tool.toolId].length > 0 && (
+                  <div
+                    style={{
+                      borderLeft: '2px solid var(--vscode-widget-border, rgba(255,255,255,0.12))',
+                      marginLeft: 3,
+                      paddingLeft: 8,
+                      marginTop: 1,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 1,
+                    }}
+                  >
+                    {subs[tool.toolId].map((subTool) => renderToolLine(subTool))}
+                  </div>
+                )}
+              </div>
             ))}
             {status === 'waiting' && !hasActiveTools && (
               <span

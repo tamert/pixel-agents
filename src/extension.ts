@@ -12,7 +12,10 @@ interface AgentState {
 	lineBuffer: string;
 	activeToolIds: Set<string>;
 	activeToolStatuses: Map<string, string>;
+	activeToolNames: Map<string, string>;
+	activeSubagentToolIds: Map<string, Set<string>>; // parentToolId → active sub-tool IDs
 	isWaiting: boolean;
+	permissionSent: boolean;
 }
 
 interface PersistedAgent {
@@ -33,6 +36,10 @@ class ArcadiaViewProvider implements vscode.WebviewViewProvider {
 	private pollingTimers = new Map<number, ReturnType<typeof setInterval>>();
 	private waitingTimers = new Map<number, ReturnType<typeof setTimeout>>();
 	private jsonlPollTimers = new Map<number, ReturnType<typeof setInterval>>();
+	private permissionTimers = new Map<number, ReturnType<typeof setTimeout>>();
+
+	// Tools exempt from permission-wait detection (they legitimately go silent)
+	private static PERMISSION_EXEMPT_TOOLS = new Set(['Task', 'AskUserQuestion']);
 
 	// /clear detection: project-level scan for new JSONL files
 	private activeAgentId: number | null = null;
@@ -132,7 +139,10 @@ class ArcadiaViewProvider implements vscode.WebviewViewProvider {
 			lineBuffer: '',
 			activeToolIds: new Set(),
 			activeToolStatuses: new Map(),
+			activeToolNames: new Map(),
+			activeSubagentToolIds: new Map(),
 			isWaiting: false,
+			permissionSent: false,
 		};
 
 		this.agents.set(id, agent);
@@ -207,6 +217,7 @@ class ArcadiaViewProvider implements vscode.WebviewViewProvider {
 
 		// Clear activity
 		this.cancelWaitingTimer(agentId);
+		this.cancelPermissionTimer(agentId);
 		this.clearAgentActivity(agentId);
 
 		// Swap to new file
@@ -255,8 +266,9 @@ class ArcadiaViewProvider implements vscode.WebviewViewProvider {
 		if (pt) { clearInterval(pt); }
 		this.pollingTimers.delete(agentId);
 
-		// Cancel waiting timer
+		// Cancel timers
 		this.cancelWaitingTimer(agentId);
+		this.cancelPermissionTimer(agentId);
 
 		// Remove from maps
 		this.agents.delete(agentId);
@@ -298,7 +310,10 @@ class ArcadiaViewProvider implements vscode.WebviewViewProvider {
 				lineBuffer: '',
 				activeToolIds: new Set(),
 				activeToolStatuses: new Map(),
+				activeToolNames: new Map(),
+				activeSubagentToolIds: new Map(),
 				isWaiting: false,
+				permissionSent: false,
 			};
 
 			this.agents.set(p.id, agent);
@@ -421,6 +436,16 @@ class ArcadiaViewProvider implements vscode.WebviewViewProvider {
 			const lines = text.split('\n');
 			agent.lineBuffer = lines.pop() || '';
 
+			const hasLines = lines.some(l => l.trim());
+			if (hasLines) {
+				// New data arriving — cancel permission timer (data flowing means not stuck on permission)
+				this.cancelPermissionTimer(agentId);
+				if (agent.permissionSent) {
+					agent.permissionSent = false;
+					this.webviewView?.webview.postMessage({ type: 'agentToolPermissionClear', id: agentId });
+				}
+			}
+
 			for (const line of lines) {
 				if (!line.trim()) { continue; }
 				this.processTranscriptLine(agentId, line);
@@ -435,7 +460,11 @@ class ArcadiaViewProvider implements vscode.WebviewViewProvider {
 		if (!agent) { return; }
 		agent.activeToolIds.clear();
 		agent.activeToolStatuses.clear();
+		agent.activeToolNames.clear();
+		agent.activeSubagentToolIds.clear();
 		agent.isWaiting = false;
+		agent.permissionSent = false;
+		this.cancelPermissionTimer(agentId);
 		this.webviewView?.webview.postMessage({ type: 'agentToolsClear', id: agentId });
 		this.webviewView?.webview.postMessage({ type: 'agentStatus', id: agentId, status: 'active' });
 	}
@@ -465,6 +494,43 @@ class ArcadiaViewProvider implements vscode.WebviewViewProvider {
 		this.waitingTimers.set(agentId, timer);
 	}
 
+	private cancelPermissionTimer(agentId: number) {
+		const timer = this.permissionTimers.get(agentId);
+		if (timer) {
+			clearTimeout(timer);
+			this.permissionTimers.delete(agentId);
+		}
+	}
+
+	private startPermissionTimer(agentId: number) {
+		this.cancelPermissionTimer(agentId);
+		const timer = setTimeout(() => {
+			this.permissionTimers.delete(agentId);
+			const agent = this.agents.get(agentId);
+			if (!agent) { return; }
+
+			// Only flag if there are still active non-exempt tools
+			let hasNonExempt = false;
+			for (const toolId of agent.activeToolIds) {
+				const toolName = agent.activeToolNames.get(toolId);
+				if (!ArcadiaViewProvider.PERMISSION_EXEMPT_TOOLS.has(toolName || '')) {
+					hasNonExempt = true;
+					break;
+				}
+			}
+
+			if (hasNonExempt) {
+				agent.permissionSent = true;
+				console.log(`[Arcadia] Agent ${agentId}: possible permission wait detected`);
+				this.webviewView?.webview.postMessage({
+					type: 'agentToolPermission',
+					id: agentId,
+				});
+			}
+		}, 5000);
+		this.permissionTimers.set(agentId, timer);
+	}
+
 	private processTranscriptLine(agentId: number, line: string) {
 		const agent = this.agents.get(agentId);
 		if (!agent) { return; }
@@ -481,12 +547,18 @@ class ArcadiaViewProvider implements vscode.WebviewViewProvider {
 					this.cancelWaitingTimer(agentId);
 					agent.isWaiting = false;
 					this.webviewView?.webview.postMessage({ type: 'agentStatus', id: agentId, status: 'active' });
+					let hasNonExemptTool = false;
 					for (const block of blocks) {
 						if (block.type === 'tool_use' && block.id) {
-							const status = this.formatToolStatus(block.name || '', block.input || {});
+							const toolName = block.name || '';
+							const status = this.formatToolStatus(toolName, block.input || {});
 							console.log(`[Arcadia] Agent ${agentId} tool start: ${block.id} ${status}`);
 							agent.activeToolIds.add(block.id);
 							agent.activeToolStatuses.set(block.id, status);
+							agent.activeToolNames.set(block.id, toolName);
+							if (!ArcadiaViewProvider.PERMISSION_EXEMPT_TOOLS.has(toolName)) {
+								hasNonExemptTool = true;
+							}
 							this.webviewView?.webview.postMessage({
 								type: 'agentToolStart',
 								id: agentId,
@@ -495,12 +567,17 @@ class ArcadiaViewProvider implements vscode.WebviewViewProvider {
 							});
 						}
 					}
+					if (hasNonExemptTool) {
+						this.startPermissionTimer(agentId);
+					}
 				} else {
 					const hasText = blocks.some(b => b.type === 'text');
 					if (hasText) {
 						this.startWaitingTimer(agentId, 2000);
 					}
 				}
+			} else if (record.type === 'progress') {
+				this.processProgressRecord(agentId, record);
 			} else if (record.type === 'user') {
 				const content = record.message?.content;
 				if (Array.isArray(content)) {
@@ -510,9 +587,20 @@ class ArcadiaViewProvider implements vscode.WebviewViewProvider {
 						for (const block of blocks) {
 							if (block.type === 'tool_result' && block.tool_use_id) {
 								console.log(`[Arcadia] Agent ${agentId} tool done: ${block.tool_use_id}`);
-								agent.activeToolIds.delete(block.tool_use_id);
-								agent.activeToolStatuses.delete(block.tool_use_id);
-								const toolId = block.tool_use_id;
+								const completedToolId = block.tool_use_id;
+								// If the completed tool was a Task, clear its subagent tools
+								if (agent.activeToolNames.get(completedToolId) === 'Task') {
+									agent.activeSubagentToolIds.delete(completedToolId);
+									this.webviewView?.webview.postMessage({
+										type: 'subagentClear',
+										id: agentId,
+										parentToolId: completedToolId,
+									});
+								}
+								agent.activeToolIds.delete(completedToolId);
+								agent.activeToolStatuses.delete(completedToolId);
+								agent.activeToolNames.delete(completedToolId);
+								const toolId = completedToolId;
 								setTimeout(() => {
 									this.webviewView?.webview.postMessage({
 										type: 'agentToolDone',
@@ -544,6 +632,74 @@ class ArcadiaViewProvider implements vscode.WebviewViewProvider {
 		}
 	}
 
+	private processProgressRecord(agentId: number, record: Record<string, unknown>) {
+		const agent = this.agents.get(agentId);
+		if (!agent) { return; }
+
+		const parentToolId = record.parentToolUseID as string | undefined;
+		if (!parentToolId) { return; }
+
+		// Verify parent is an active Task tool
+		if (agent.activeToolNames.get(parentToolId) !== 'Task') { return; }
+
+		const data = record.data as Record<string, unknown> | undefined;
+		const msg = data?.message as Record<string, unknown> | undefined;
+		if (!msg) { return; }
+
+		const msgType = msg.type as string;
+		const innerMsg = msg.message as Record<string, unknown> | undefined;
+		const content = innerMsg?.content;
+		if (!Array.isArray(content)) { return; }
+
+		if (msgType === 'assistant') {
+			for (const block of content) {
+				if (block.type === 'tool_use' && block.id) {
+					const toolName = block.name || '';
+					const status = this.formatToolStatus(toolName, block.input || {});
+					console.log(`[Arcadia] Agent ${agentId} subagent tool start: ${block.id} ${status} (parent: ${parentToolId})`);
+
+					// Track sub-tool
+					let subTools = agent.activeSubagentToolIds.get(parentToolId);
+					if (!subTools) {
+						subTools = new Set();
+						agent.activeSubagentToolIds.set(parentToolId, subTools);
+					}
+					subTools.add(block.id);
+
+					this.webviewView?.webview.postMessage({
+						type: 'subagentToolStart',
+						id: agentId,
+						parentToolId,
+						toolId: block.id,
+						status,
+					});
+				}
+			}
+		} else if (msgType === 'user') {
+			for (const block of content) {
+				if (block.type === 'tool_result' && block.tool_use_id) {
+					console.log(`[Arcadia] Agent ${agentId} subagent tool done: ${block.tool_use_id} (parent: ${parentToolId})`);
+
+					// Remove from tracking
+					const subTools = agent.activeSubagentToolIds.get(parentToolId);
+					if (subTools) {
+						subTools.delete(block.tool_use_id);
+					}
+
+					const toolId = block.tool_use_id;
+					setTimeout(() => {
+						this.webviewView?.webview.postMessage({
+							type: 'subagentToolDone',
+							id: agentId,
+							parentToolId,
+							toolId,
+						});
+					}, 300);
+				}
+			}
+		}
+	}
+
 	private formatToolStatus(toolName: string, input: Record<string, unknown>): string {
 		const base = (p: unknown) => typeof p === 'string' ? path.basename(p) : '';
 		switch (toolName) {
@@ -558,7 +714,10 @@ class ArcadiaViewProvider implements vscode.WebviewViewProvider {
 			case 'Grep': return 'Searching code';
 			case 'WebFetch': return 'Fetching web content';
 			case 'WebSearch': return 'Searching the web';
-			case 'Task': return 'Running subtask';
+			case 'Task': {
+				const desc = typeof input.description === 'string' ? input.description : '';
+				return desc ? `Subtask: ${desc.length > 40 ? desc.slice(0, 40) + '\u2026' : desc}` : 'Running subtask';
+			}
 			case 'AskUserQuestion': return 'Waiting for your answer';
 			case 'EnterPlanMode': return 'Planning';
 			case 'NotebookEdit': return `Editing notebook`;
