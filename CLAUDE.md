@@ -37,7 +37,7 @@ webview-ui/src/               — React + TypeScript (Vite)
       spriteData.ts           — Pixel data: characters (6 palettes), furniture, tiles, bubbles
       spriteCache.ts          — SpriteData → offscreen canvas, per-zoom WeakMap cache, outline sprites
     editor/
-      editorActions.ts        — Pure layout ops: paint, place, remove, move, rotate, canPlace
+      editorActions.ts        — Pure layout ops: paint, place, remove, move, rotate, toggleState, canPlace
       editorState.ts          — Imperative state: tools, ghost, selection, undo/redo, dirty, drag
       EditorToolbar.tsx       — React toolbar/palette for edit mode
     layout/
@@ -107,7 +107,7 @@ Toggle via "Layout" button. Tools: SELECT (default), Floor paint, Wall paint, Fu
 
 **Walls**: Separate Wall paint tool. Click/drag to add walls; click/drag existing walls to remove (toggle direction set by first tile of drag, tracked by `wallDragAdding`). HSBC color sliders (Colorize mode) apply to all wall tiles at once. Eyedropper on a wall tile picks its color and switches to Wall tool. Furniture cannot be placed on wall tiles, but background rows (top N `backgroundTiles` rows) may overlap walls.
 
-**Furniture**: Ghost preview (green/red validity). R key rotates. Drag-to-move in SELECT. Delete button (red X) + rotate button (blue arrow) on selected items. Any selected furniture shows HSBC color sliders (Color toggle + Clear button); color stored per-item in `PlacedFurniture.color?`. Single undo entry per color-editing session (tracked by `colorEditUidRef`). Pick tool copies type+color from placed item. Surface items preferred when clicking stacked furniture.
+**Furniture**: Ghost preview (green/red validity). R key rotates, T key toggles on/off state. Drag-to-move in SELECT. Delete button (red X) + rotate button (blue arrow) on selected items. Any selected furniture shows HSBC color sliders (Color toggle + Clear button); color stored per-item in `PlacedFurniture.color?`. Single undo entry per color-editing session (tracked by `colorEditUidRef`). Pick tool copies type+color from placed item. Surface items preferred when clicking stacked furniture.
 
 **Undo/Redo**: 50-level, Ctrl+Z/Y. EditActionBar (top-center when dirty): Undo, Redo, Save, Reset.
 
@@ -119,7 +119,13 @@ Toggle via "Layout" button. Tools: SELECT (default), Floor paint, Wall paint, Fu
 
 **Loading**: `esbuild.js` copies `webview-ui/public/assets/` → `dist/assets/`. Loader checks bundled path first, falls back to workspace root. PNG → pngjs → SpriteData (2D hex array, alpha≥128 = opaque).
 
-**Catalog**: `furniture-catalog.json` with id, name, label, category, footprint, isDesk, canPlaceOnWalls, groupId?, orientation?, canPlaceOnSurfaces?, backgroundTiles?. String-based type system (no enum constraint). Categories: desks, chairs, storage, electronics, decor, wall, misc. Wall-placeable items (`canPlaceOnWalls: true`) use the `wall` category and appear in a dedicated "Wall" tab in the editor. Rotation groups: `buildDynamicCatalog()` builds `rotationGroups` Map, shows 1 item per group in editor.
+**Catalog**: `furniture-catalog.json` with id, name, label, category, footprint, isDesk, canPlaceOnWalls, groupId?, orientation?, state?, canPlaceOnSurfaces?, backgroundTiles?. String-based type system (no enum constraint). Categories: desks, chairs, storage, electronics, decor, wall, misc. Wall-placeable items (`canPlaceOnWalls: true`) use the `wall` category and appear in a dedicated "Wall" tab in the editor. Asset naming convention: `{BASE}[_{ORIENTATION}][_{STATE}]` (e.g., `MONITOR_FRONT_OFF`, `CRT_MONITOR_BACK`).
+
+**Rotation groups**: `buildDynamicCatalog()` builds `rotationGroups` Map from assets sharing a `groupId`. Flexible: supports 2+ orientations (e.g., front/back only). Editor palette shows 1 item per group (front orientation preferred). `getRotatedType()` cycles through available orientations.
+
+**State groups**: Items with `state: "on"` / `"off"` sharing the same `groupId` + `orientation` form toggle pairs. `stateGroups` Map enables `getToggledType()` lookup. Editor palette hides on-state variants, showing only the off/default version. State groups are mirrored across orientations (on-state variants get their own rotation groups).
+
+**Auto-state**: `officeState.rebuildFurnitureInstances()` swaps electronics to ON sprites when an active agent faces a desk with that item nearby (3 tiles deep in facing direction, 1 tile to each side). Operates at render time without modifying the saved layout.
 
 **Background tiles**: `backgroundTiles?: number` on `FurnitureCatalogEntry` — top N footprint rows allow other furniture to be placed on them. Items on background rows render behind the host furniture via z-sort (lower zY). `getPlacementBlockedTiles()` skips bg rows for occupied set; `canPlaceFurniture()` also skips the new item's own bg rows (symmetric placement). Walking is still blocked (`getBlockedTiles()` unchanged). Set via asset-manager.html "Background Tiles" field.
 

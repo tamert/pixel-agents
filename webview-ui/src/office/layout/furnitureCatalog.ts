@@ -31,6 +31,7 @@ export interface LoadedAssetData {
     isDesk: boolean
     groupId?: string
     orientation?: string  // 'front' | 'back' | 'left' | 'right'
+    state?: string        // 'on' | 'off'
     canPlaceOnSurfaces?: boolean
     backgroundTiles?: number
     canPlaceOnWalls?: boolean
@@ -78,15 +79,20 @@ export const FURNITURE_CATALOG: CatalogEntryWithCategory[] = [
 ]
 
 // ── Rotation groups ──────────────────────────────────────────────
+// Flexible rotation: supports 2+ orientations (not just all 4)
 interface RotationGroup {
-  front: string
-  right: string
-  back: string
-  left: string
+  /** Ordered list of orientations available for this group */
+  orientations: string[]
+  /** Maps orientation → asset ID (for the default/off state) */
+  members: Record<string, string>
 }
 
 // Maps any member asset ID → its rotation group
 const rotationGroups = new Map<string, RotationGroup>()
+
+// ── State groups ────────────────────────────────────────────────
+// Maps asset ID → its on/off counterpart
+const stateGroups = new Map<string, string>()
 
 // Internal catalog (includes all variants for getCatalogEntry lookups)
 let internalCatalog: CatalogEntryWithCategory[] | null = null
@@ -129,49 +135,113 @@ export function buildDynamicCatalog(assets: LoadedAssetData): boolean {
 
   // Build rotation groups from groupId + orientation metadata
   rotationGroups.clear()
-  const groupMap = new Map<string, Partial<Record<string, string>>>()
+  stateGroups.clear()
+
+  // Phase 1: Collect orientations per group (only "off" or stateless variants for rotation)
+  const groupMap = new Map<string, Map<string, string>>() // groupId → (orientation → assetId)
   for (const asset of assets.catalog) {
     if (asset.groupId && asset.orientation) {
-      let group = groupMap.get(asset.groupId)
-      if (!group) {
-        group = {}
-        groupMap.set(asset.groupId, group)
+      // For rotation groups, only use the "off" or stateless variant
+      if (asset.state && asset.state !== 'off') continue
+      let orientMap = groupMap.get(asset.groupId)
+      if (!orientMap) {
+        orientMap = new Map()
+        groupMap.set(asset.groupId, orientMap)
       }
-      group[asset.orientation] = asset.id
+      orientMap.set(asset.orientation, asset.id)
     }
   }
 
-  // Only register complete groups (all 4 orientations present)
+  // Phase 2: Register rotation groups with 2+ orientations
   const nonFrontIds = new Set<string>()
-  for (const members of groupMap.values()) {
-    if (members.front && members.right && members.back && members.left) {
-      const rg: RotationGroup = {
-        front: members.front,
-        right: members.right,
-        back: members.back,
-        left: members.left,
-      }
-      rotationGroups.set(rg.front, rg)
-      rotationGroups.set(rg.right, rg)
-      rotationGroups.set(rg.back, rg)
-      rotationGroups.set(rg.left, rg)
-      // Track non-front IDs to exclude from visible catalog
-      nonFrontIds.add(rg.right)
-      nonFrontIds.add(rg.back)
-      nonFrontIds.add(rg.left)
+  const orientationOrder = ['front', 'right', 'back', 'left']
+  for (const orientMap of groupMap.values()) {
+    if (orientMap.size < 2) continue
+    // Build ordered list of available orientations
+    const orderedOrients = orientationOrder.filter((o) => orientMap.has(o))
+    if (orderedOrients.length < 2) continue
+    const members: Record<string, string> = {}
+    for (const o of orderedOrients) {
+      members[o] = orientMap.get(o)!
     }
+    const rg: RotationGroup = { orientations: orderedOrients, members }
+    for (const id of Object.values(members)) {
+      rotationGroups.set(id, rg)
+    }
+    // Track non-front IDs to exclude from visible catalog
+    for (const [orient, id] of Object.entries(members)) {
+      if (orient !== 'front') nonFrontIds.add(id)
+    }
+  }
+
+  // Phase 3: Build state groups (on ↔ off pairs within same groupId + orientation)
+  const stateMap = new Map<string, Map<string, string>>() // "groupId|orientation" → (state → assetId)
+  for (const asset of assets.catalog) {
+    if (asset.groupId && asset.state) {
+      const key = `${asset.groupId}|${asset.orientation || ''}`
+      let sm = stateMap.get(key)
+      if (!sm) {
+        sm = new Map()
+        stateMap.set(key, sm)
+      }
+      sm.set(asset.state, asset.id)
+    }
+  }
+  for (const sm of stateMap.values()) {
+    const onId = sm.get('on')
+    const offId = sm.get('off')
+    if (onId && offId) {
+      stateGroups.set(onId, offId)
+      stateGroups.set(offId, onId)
+    }
+  }
+
+  // Also register rotation groups for "on" state variants (so rotation works on on-state items too)
+  for (const asset of assets.catalog) {
+    if (asset.groupId && asset.orientation && asset.state === 'on') {
+      // Find the off-variant's rotation group
+      const offCounterpart = stateGroups.get(asset.id)
+      if (offCounterpart) {
+        const offGroup = rotationGroups.get(offCounterpart)
+        if (offGroup) {
+          // Build an equivalent group for the "on" state
+          const onMembers: Record<string, string> = {}
+          for (const orient of offGroup.orientations) {
+            const offId = offGroup.members[orient]
+            const onId = stateGroups.get(offId)
+            // Use on-state variant if available, otherwise fall back to off-state
+            onMembers[orient] = onId ?? offId
+          }
+          const onGroup: RotationGroup = { orientations: offGroup.orientations, members: onMembers }
+          for (const id of Object.values(onMembers)) {
+            if (!rotationGroups.has(id)) {
+              rotationGroups.set(id, onGroup)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Track "on" variant IDs to exclude from visible catalog
+  const onStateIds = new Set<string>()
+  for (const asset of assets.catalog) {
+    if (asset.state === 'on') onStateIds.add(asset.id)
   }
 
   // Store full internal catalog (all variants — for getCatalogEntry lookups)
   internalCatalog = allEntries
 
-  // Visible catalog: exclude non-front variants of rotation groups
-  const visibleEntries = allEntries.filter((e) => !nonFrontIds.has(e.type))
+  // Visible catalog: exclude non-front variants and "on" state variants
+  const visibleEntries = allEntries.filter((e) => !nonFrontIds.has(e.type) && !onStateIds.has(e.type))
 
-  // Strip orientation suffix from labels for front variants in groups
+  // Strip orientation/state suffix from labels for grouped variants
   for (const entry of visibleEntries) {
-    if (rotationGroups.has(entry.type)) {
-      entry.label = entry.label.replace(/ - Front$/, '')
+    if (rotationGroups.has(entry.type) || stateGroups.has(entry.type)) {
+      entry.label = entry.label
+        .replace(/ - Front - Off$/, '')
+        .replace(/ - Front$/, '')
+        .replace(/ - Off$/, '')
     }
   }
 
@@ -180,7 +250,8 @@ export function buildDynamicCatalog(assets: LoadedAssetData): boolean {
     .filter((c): c is FurnitureCategory => !!c)
     .sort()
 
-  console.log(`✓ Built dynamic catalog with ${allEntries.length} assets (${visibleEntries.length} visible, ${rotationGroups.size / 4} rotation groups)`)
+  const rotGroupCount = new Set(Array.from(rotationGroups.values())).size
+  console.log(`✓ Built dynamic catalog with ${allEntries.length} assets (${visibleEntries.length} visible, ${rotGroupCount} rotation groups, ${stateGroups.size / 2} state pairs)`)
   return true
 }
 
@@ -223,12 +294,36 @@ export const FURNITURE_CATEGORIES: Array<{ id: FurnitureCategory; label: string 
 export function getRotatedType(currentType: string, direction: 'cw' | 'ccw'): string | null {
   const group = rotationGroups.get(currentType)
   if (!group) return null
-  const order = [group.front, group.right, group.back, group.left]
+  const order = group.orientations.map((o) => group.members[o])
   const idx = order.indexOf(currentType)
   if (idx === -1) return null
   const step = direction === 'cw' ? 1 : -1
-  const nextIdx = (idx + step + 4) % 4
+  const nextIdx = (idx + step + order.length) % order.length
   return order[nextIdx]
+}
+
+/** Returns the toggled state variant (on↔off), or null if no state variant exists. */
+export function getToggledType(currentType: string): string | null {
+  return stateGroups.get(currentType) ?? null
+}
+
+/** Returns the "on" variant if this type has one, otherwise returns the type unchanged. */
+export function getOnStateType(currentType: string): string {
+  const toggled = stateGroups.get(currentType)
+  if (!toggled) return currentType
+  // Determine if current is "off" by checking if toggled is the "on" variant
+  // We need to check the catalog data — but since stateGroups is symmetric (on→off, off→on),
+  // we check the name convention: "on" types end with _ON
+  if (currentType.endsWith('_OFF') || currentType.endsWith('_off')) return toggled
+  return currentType // already on (or has no convention — return as-is)
+}
+
+/** Returns the "off" variant if this type has one, otherwise returns the type unchanged. */
+export function getOffStateType(currentType: string): string {
+  const toggled = stateGroups.get(currentType)
+  if (!toggled) return currentType
+  if (currentType.endsWith('_ON') || currentType.endsWith('_on')) return toggled
+  return currentType // already off
 }
 
 /** Returns true if the given furniture type is part of a rotation group. */

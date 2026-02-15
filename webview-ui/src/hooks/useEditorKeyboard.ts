@@ -7,6 +7,7 @@ export function useEditorKeyboard(
   editorState: EditorState,
   onDeleteSelected: () => void,
   onRotateSelected: () => void,
+  onToggleState: () => void,
   onUndo: () => void,
   onRedo: () => void,
   onEditorTick: () => void,
@@ -40,6 +41,8 @@ export function useEditorKeyboard(
         }
       } else if (e.key === 'r' || e.key === 'R') {
         onRotateSelected()
+      } else if (e.key === 't' || e.key === 'T') {
+        onToggleState()
       } else if (e.key === 'z' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
         e.preventDefault()
         onUndo()
@@ -53,5 +56,5 @@ export function useEditorKeyboard(
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [isEditMode, editorState, onDeleteSelected, onRotateSelected, onUndo, onRedo, onEditorTick, onCloseEditMode])
+  }, [isEditMode, editorState, onDeleteSelected, onRotateSelected, onToggleState, onUndo, onRedo, onEditorTick, onCloseEditMode])
 }

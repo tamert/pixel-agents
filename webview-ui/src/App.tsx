@@ -139,6 +139,7 @@ function App() {
     editorState,
     editor.handleDeleteSelected,
     editor.handleRotateSelected,
+    editor.handleToggleState,
     editor.handleUndo,
     editor.handleRedo,
     useCallback(() => setEditorTickForKeyboard((n) => n + 1), []),
@@ -232,6 +233,17 @@ function App() {
       />
 
       <ZoomControls zoom={editor.zoom} onZoomChange={editor.handleZoomChange} />
+
+      {/* Vignette overlay */}
+      <div
+        style={{
+          position: 'absolute',
+          inset: 0,
+          background: 'radial-gradient(ellipse at center, transparent 50%, rgba(0, 0, 0, 0.6) 100%)',
+          pointerEvents: 'none',
+          zIndex: 40,
+        }}
+      />
 
       <BottomToolbar
         isEditMode={editor.isEditMode}

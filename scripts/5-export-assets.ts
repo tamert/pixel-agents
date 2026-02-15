@@ -34,6 +34,7 @@ interface Asset {
   partOfGroup?: boolean
   groupId?: string | null
   orientation?: string
+  state?: string
   canPlaceOnSurfaces?: boolean
   backgroundTiles?: number
 }
@@ -52,6 +53,7 @@ interface CatalogEntry {
   canPlaceOnWalls?: boolean
   groupId?: string
   orientation?: string
+  state?: string
   canPlaceOnSurfaces?: boolean
   backgroundTiles?: number
 }
@@ -207,6 +209,11 @@ for (const asset of assets) {
           entry.orientation = suffix
         }
       }
+    }
+
+    // State (on/off)
+    if (asset.state) {
+      entry.state = asset.state
     }
 
     catalog.push(entry)

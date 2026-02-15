@@ -1,5 +1,5 @@
-import { TILE_SIZE, CharacterState } from '../types.js'
-import type { Character, Seat, FurnitureInstance, TileType as TileTypeVal, OfficeLayout } from '../types.js'
+import { TILE_SIZE, CharacterState, Direction } from '../types.js'
+import type { Character, Seat, FurnitureInstance, TileType as TileTypeVal, OfficeLayout, PlacedFurniture } from '../types.js'
 import { createCharacter, updateCharacter } from './characters.js'
 import { getWalkableTiles, findPath } from '../layout/tileMap.js'
 import {
@@ -10,6 +10,7 @@ import {
   getSeatTiles,
   getBlockedTiles,
 } from '../layout/layoutSerializer.js'
+import { getCatalogEntry, getOnStateType } from '../layout/furnitureCatalog.js'
 
 export class OfficeState {
   layout: OfficeLayout
@@ -46,7 +47,7 @@ export class OfficeState {
     this.seats = layoutToSeats(layout.furniture)
     const seatTiles = getSeatTiles(this.seats)
     this.blockedTiles = getBlockedTiles(layout.furniture, seatTiles)
-    this.furniture = layoutToFurnitureInstances(layout.furniture)
+    this.rebuildFurnitureInstances()
     this.walkableTiles = getWalkableTiles(this.tileMap, this.blockedTiles)
 
     // Reassign characters to new seats, preserving existing assignments when possible
@@ -310,7 +311,68 @@ export class OfficeState {
     const ch = this.characters.get(id)
     if (ch) {
       ch.isActive = active
+      this.rebuildFurnitureInstances()
     }
+  }
+
+  /** Rebuild furniture instances with auto-state applied (active agents turn electronics ON) */
+  private rebuildFurnitureInstances(): void {
+    // Collect tiles where active agents face desks
+    const autoOnTiles = new Set<string>()
+    for (const ch of this.characters.values()) {
+      if (!ch.isActive || !ch.seatId) continue
+      const seat = this.seats.get(ch.seatId)
+      if (!seat) continue
+      // Find the desk tile(s) the agent faces from their seat
+      const dCol = seat.facingDir === Direction.RIGHT ? 1 : seat.facingDir === Direction.LEFT ? -1 : 0
+      const dRow = seat.facingDir === Direction.DOWN ? 1 : seat.facingDir === Direction.UP ? -1 : 0
+      // Check tiles in the facing direction (desk could be 1-3 tiles deep)
+      for (let d = 1; d <= 3; d++) {
+        const tileCol = seat.seatCol + dCol * d
+        const tileRow = seat.seatRow + dRow * d
+        autoOnTiles.add(`${tileCol},${tileRow}`)
+      }
+      // Also check tiles to the sides of the facing direction (desks can be wide)
+      for (let d = 1; d <= 2; d++) {
+        const baseCol = seat.seatCol + dCol * d
+        const baseRow = seat.seatRow + dRow * d
+        if (dCol !== 0) {
+          // Facing left/right: check tiles above and below
+          autoOnTiles.add(`${baseCol},${baseRow - 1}`)
+          autoOnTiles.add(`${baseCol},${baseRow + 1}`)
+        } else {
+          // Facing up/down: check tiles left and right
+          autoOnTiles.add(`${baseCol - 1},${baseRow}`)
+          autoOnTiles.add(`${baseCol + 1},${baseRow}`)
+        }
+      }
+    }
+
+    if (autoOnTiles.size === 0) {
+      this.furniture = layoutToFurnitureInstances(this.layout.furniture)
+      return
+    }
+
+    // Build modified furniture list with auto-state applied
+    const modifiedFurniture: PlacedFurniture[] = this.layout.furniture.map((item) => {
+      const entry = getCatalogEntry(item.type)
+      if (!entry) return item
+      // Check if any tile of this furniture overlaps an auto-on tile
+      for (let dr = 0; dr < entry.footprintH; dr++) {
+        for (let dc = 0; dc < entry.footprintW; dc++) {
+          if (autoOnTiles.has(`${item.col + dc},${item.row + dr}`)) {
+            const onType = getOnStateType(item.type)
+            if (onType !== item.type) {
+              return { ...item, type: onType }
+            }
+            return item
+          }
+        }
+      }
+      return item
+    })
+
+    this.furniture = layoutToFurnitureInstances(modifiedFurniture)
   }
 
   setAgentTool(id: number, tool: string | null): void {

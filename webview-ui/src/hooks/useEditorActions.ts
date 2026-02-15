@@ -4,8 +4,8 @@ import type { EditorState } from '../office/editor/editorState.js'
 import { EditTool } from '../office/types.js'
 import { TileType } from '../office/types.js'
 import type { OfficeLayout, EditTool as EditToolType, TileType as TileTypeVal, FloorColor, PlacedFurniture } from '../office/types.js'
-import { paintTile, placeFurniture, removeFurniture, moveFurniture, rotateFurniture, canPlaceFurniture, getWallPlacementRow } from '../office/editor/editorActions.js'
-import { getCatalogEntry, getRotatedType } from '../office/layout/furnitureCatalog.js'
+import { paintTile, placeFurniture, removeFurniture, moveFurniture, rotateFurniture, toggleFurnitureState, canPlaceFurniture, getWallPlacementRow } from '../office/editor/editorActions.js'
+import { getCatalogEntry, getRotatedType, getToggledType } from '../office/layout/furnitureCatalog.js'
 import { defaultZoom } from '../office/toolUtils.js'
 import { vscode } from '../vscodeApi.js'
 
@@ -27,6 +27,7 @@ export interface EditorActions {
   handleFurnitureTypeChange: (type: string) => void // FurnitureType enum or asset ID
   handleDeleteSelected: () => void
   handleRotateSelected: () => void
+  handleToggleState: () => void
   handleUndo: () => void
   handleRedo: () => void
   handleReset: () => void
@@ -82,7 +83,19 @@ export function useEditorActions(
     setIsEditMode((prev) => {
       const next = !prev
       editorState.isEditMode = next
-      if (!next) {
+      if (next) {
+        // Initialize wallColor from existing wall tiles so new walls match
+        const os = getOfficeState()
+        const layout = os.getLayout()
+        if (layout.tileColors) {
+          for (let i = 0; i < layout.tiles.length; i++) {
+            if (layout.tiles[i] === TileType.WALL && layout.tileColors[i]) {
+              editorState.wallColor = { ...layout.tileColors[i]! }
+              break
+            }
+          }
+        }
+      } else {
         editorState.clearSelection()
         editorState.clearGhost()
         editorState.clearDrag()
@@ -90,7 +103,7 @@ export function useEditorActions(
       }
       return next
     })
-  }, [editorState])
+  }, [editorState, getOfficeState])
 
   // Tool toggle: clicking already-active tool deselects it (returns to SELECT)
   const handleToolChange = useCallback((tool: EditToolType) => {
@@ -219,6 +232,26 @@ export function useEditorActions(
     if (!uid) return
     const os = getOfficeState()
     const newLayout = rotateFurniture(os.getLayout(), uid, 'cw')
+    if (newLayout !== os.getLayout()) {
+      applyEdit(newLayout)
+    }
+  }, [getOfficeState, editorState, applyEdit])
+
+  const handleToggleState = useCallback(() => {
+    // If in furniture placement mode, toggle the selected type's state
+    if (editorState.activeTool === EditTool.FURNITURE_PLACE) {
+      const toggled = getToggledType(editorState.selectedFurnitureType)
+      if (toggled) {
+        editorState.selectedFurnitureType = toggled
+        setEditorTick((n) => n + 1)
+      }
+      return
+    }
+    // Otherwise toggle the selected placed furniture's state
+    const uid = editorState.selectedFurnitureUid
+    if (!uid) return
+    const os = getOfficeState()
+    const newLayout = toggleFurnitureState(os.getLayout(), uid)
     if (newLayout !== os.getLayout()) {
       applyEdit(newLayout)
     }
@@ -409,6 +442,7 @@ export function useEditorActions(
     handleFurnitureTypeChange,
     handleDeleteSelected,
     handleRotateSelected,
+    handleToggleState,
     handleUndo,
     handleRedo,
     handleReset,

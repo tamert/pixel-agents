@@ -1,6 +1,6 @@
 import { MAP_COLS, MAP_ROWS, TileType } from '../types.js'
 import type { TileType as TileTypeVal, OfficeLayout, PlacedFurniture, FloorColor } from '../types.js'
-import { getCatalogEntry, getRotatedType } from '../layout/furnitureCatalog.js'
+import { getCatalogEntry, getRotatedType, getToggledType } from '../layout/furnitureCatalog.js'
 import { getPlacementBlockedTiles } from '../layout/layoutSerializer.js'
 
 /** Paint a single tile with pattern and color. Returns new layout (immutable). */
@@ -57,6 +57,18 @@ export function rotateFurniture(layout: OfficeLayout, uid: string, direction: 'c
   const item = layout.furniture.find((f) => f.uid === uid)
   if (!item) return layout
   const newType = getRotatedType(item.type, direction)
+  if (!newType) return layout
+  return {
+    ...layout,
+    furniture: layout.furniture.map((f) => (f.uid === uid ? { ...f, type: newType } : f)),
+  }
+}
+
+/** Toggle furniture state (on/off). Returns new layout (immutable). */
+export function toggleFurnitureState(layout: OfficeLayout, uid: string): OfficeLayout {
+  const item = layout.furniture.find((f) => f.uid === uid)
+  if (!item) return layout
+  const newType = getToggledType(item.type)
   if (!newType) return layout
   return {
     ...layout,

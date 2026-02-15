@@ -26,6 +26,8 @@ export interface FurnitureAsset {
   groupId?: string
   canPlaceOnSurfaces?: boolean
   backgroundTiles?: number
+  orientation?: string
+  state?: string
 }
 
 export interface LoadedAssets {
