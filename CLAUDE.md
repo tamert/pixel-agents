@@ -25,7 +25,6 @@ webview-ui/src/               — React + TypeScript (Vite)
     BottomToolbar.tsx          — + Agent, Layout toggle, Settings gear
     ZoomControls.tsx           — +/- zoom (top-right)
     SettingsModal.tsx          — Debug toggle popup
-    AgentLabels.tsx            — Name labels + status dots above characters
     DebugView.tsx              — Debug overlay
   office/
     types.ts                  — Constants (TILE_SIZE=16, MAP 20x11), interfaces, OfficeLayout, FloorColor
@@ -51,7 +50,7 @@ webview-ui/src/               — React + TypeScript (Vite)
       renderer.ts             — Canvas: tiles, z-sorted entities, overlays, edit UI
     components/
       OfficeCanvas.tsx        — Canvas, resize, DPR, mouse hit-testing, edit interactions, drag-to-move
-      ToolOverlay.tsx          — HTML tooltip over hovered character
+      ToolOverlay.tsx          — Activity status label above hovered/selected character + close button
 
 scripts/                      — 7-stage asset extraction pipeline
   0-import-tileset.ts         — Interactive CLI wrapper

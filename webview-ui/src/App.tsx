@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useMemo } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import { OfficeState } from './office/engine/officeState.js'
 import { OfficeCanvas } from './office/components/OfficeCanvas.js'
 import { ToolOverlay } from './office/components/ToolOverlay.js'
@@ -12,7 +12,6 @@ import { useEditorActions } from './hooks/useEditorActions.js'
 import { useEditorKeyboard } from './hooks/useEditorKeyboard.js'
 import { ZoomControls } from './components/ZoomControls.js'
 import { BottomToolbar } from './components/BottomToolbar.js'
-import { AgentLabels } from './components/AgentLabels.js'
 import { DebugView } from './components/DebugView.js'
 
 // Game state lives outside React — updated imperatively by message handlers
@@ -129,8 +128,6 @@ function App() {
     vscode.postMessage({ type: 'focusAgent', id })
   }, [])
 
-  const [hoveredAgent, setHoveredAgent] = useState<number | null>(null)
-  const [hoverPos, setHoverPos] = useState({ x: 0, y: 0 })
   const containerRef = useRef<HTMLDivElement>(null)
 
   const [editorTickForKeyboard, setEditorTickForKeyboard] = useState(0)
@@ -146,31 +143,9 @@ function App() {
     editor.handleToggleEditMode,
   )
 
-  const handleHover = useCallback((agentId: number | null, screenX: number, screenY: number) => {
-    setHoveredAgent(agentId)
-    setHoverPos({ x: screenX, y: screenY })
+  const handleCloseAgent = useCallback((id: number) => {
+    vscode.postMessage({ type: 'closeAgent', id })
   }, [])
-
-  // Merge sub-agent tools into a unified tool map for ToolOverlay
-  const allAgentTools = useMemo(() => {
-    const merged: Record<number, import('./office/types.js').ToolActivity[]> = { ...agentTools }
-    for (const sub of subagentCharacters) {
-      const parentSubs = subagentTools[sub.parentAgentId]
-      if (parentSubs && parentSubs[sub.parentToolId]) {
-        merged[sub.id] = parentSubs[sub.parentToolId]
-      }
-    }
-    return merged
-  }, [agentTools, subagentTools, subagentCharacters])
-
-  // Build a label map for sub-agent characters (used by ToolOverlay + AgentLabels)
-  const agentLabels = useMemo(() => {
-    const labels: Record<number, string> = {}
-    for (const sub of subagentCharacters) {
-      labels[sub.id] = sub.label
-    }
-    return labels
-  }, [subagentCharacters])
 
   const handleClick = useCallback((agentId: number) => {
     // If clicked agent is a sub-agent, focus the parent's terminal instead
@@ -217,7 +192,6 @@ function App() {
 
       <OfficeCanvas
         officeState={officeState}
-        onHover={handleHover}
         onClick={handleClick}
         isEditMode={editor.isEditMode}
         editorState={editorState}
@@ -304,24 +278,15 @@ function App() {
         )
       })()}
 
-      <AgentLabels
+      <ToolOverlay
         officeState={officeState}
         agents={agents}
-        agentStatuses={agentStatuses}
+        agentTools={agentTools}
+        subagentCharacters={subagentCharacters}
         containerRef={containerRef}
         zoom={editor.zoom}
         panRef={editor.panRef}
-        subagentCharacters={subagentCharacters}
-      />
-
-      <ToolOverlay
-        agentId={hoveredAgent}
-        screenX={hoverPos.x}
-        screenY={hoverPos.y}
-        agentTools={allAgentTools}
-        agentStatuses={agentStatuses}
-        subagentTools={subagentTools}
-        agentLabels={agentLabels}
+        onCloseAgent={handleCloseAgent}
       />
 
       {isDebugMode && (

@@ -1,145 +1,208 @@
+import { useState, useEffect } from 'react'
 import type { ToolActivity } from '../types.js'
+import type { OfficeState } from '../engine/officeState.js'
+import type { SubagentCharacter } from '../../hooks/useExtensionMessages.js'
+import { TILE_SIZE, MAP_COLS, MAP_ROWS, CharacterState } from '../types.js'
 
 interface ToolOverlayProps {
-  agentId: number | null
-  screenX: number
-  screenY: number
+  officeState: OfficeState
+  agents: number[]
   agentTools: Record<number, ToolActivity[]>
-  agentStatuses: Record<number, string>
-  subagentTools: Record<number, Record<string, ToolActivity[]>>
-  agentLabels?: Record<number, string>
+  subagentCharacters: SubagentCharacter[]
+  containerRef: React.RefObject<HTMLDivElement | null>
+  zoom: number
+  panRef: React.RefObject<{ x: number; y: number }>
+  onCloseAgent: (id: number) => void
+}
+
+/** Derive a short human-readable activity string from tools/status */
+function getActivityText(
+  agentId: number,
+  agentTools: Record<number, ToolActivity[]>,
+  isActive: boolean,
+): string {
+  const tools = agentTools[agentId]
+  if (tools && tools.length > 0) {
+    // Find the latest non-done tool
+    const activeTool = [...tools].reverse().find((t) => !t.done)
+    if (activeTool) {
+      if (activeTool.permissionWait) return 'Needs approval'
+      return activeTool.status
+    }
+    // All tools done but agent still active (mid-turn) — keep showing last tool status
+    if (isActive) {
+      const lastTool = tools[tools.length - 1]
+      if (lastTool) return lastTool.status
+    }
+  }
+
+  return 'Idle'
 }
 
 export function ToolOverlay({
-  agentId,
-  screenX,
-  screenY,
+  officeState,
+  agents,
   agentTools,
-  agentStatuses,
-  subagentTools,
-  agentLabels,
+  subagentCharacters,
+  containerRef,
+  zoom,
+  panRef,
+  onCloseAgent,
 }: ToolOverlayProps) {
-  if (agentId === null) return null
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    let rafId = 0
+    const tick = () => {
+      setTick((n) => n + 1)
+      rafId = requestAnimationFrame(tick)
+    }
+    rafId = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(rafId)
+  }, [])
 
-  const tools = agentTools[agentId] || []
-  const subs = subagentTools[agentId] || {}
-  const status = agentStatuses[agentId]
-  const hasActiveTools = tools.some((t) => !t.done)
+  const el = containerRef.current
+  if (!el) return null
+  const rect = el.getBoundingClientRect()
+  const dpr = window.devicePixelRatio || 1
+  const canvasW = Math.round(rect.width * dpr)
+  const canvasH = Math.round(rect.height * dpr)
+  const mapW = MAP_COLS * TILE_SIZE * zoom
+  const mapH = MAP_ROWS * TILE_SIZE * zoom
+  const deviceOffsetX = Math.floor((canvasW - mapW) / 2) + Math.round(panRef.current.x)
+  const deviceOffsetY = Math.floor((canvasH - mapH) / 2) + Math.round(panRef.current.y)
 
-  if (tools.length === 0 && status !== 'waiting') return null
+  const selectedId = officeState.selectedAgentId
+  const hoveredId = officeState.hoveredAgentId
+
+  // All character IDs
+  const allIds = [...agents, ...subagentCharacters.map((s) => s.id)]
 
   return (
-    <div
-      style={{
-        position: 'absolute',
-        left: screenX + 12,
-        top: screenY - 8,
-        background: 'var(--vscode-editorWidget-background, #252526)',
-        border: '1px solid var(--vscode-editorWidget-border, #454545)',
-        borderRadius: 4,
-        padding: '6px 10px',
-        pointerEvents: 'none',
-        zIndex: 100,
-        maxWidth: 280,
-        fontSize: '11px',
-        boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
-      }}
-    >
-      <div
-        style={{
-          fontWeight: 'bold',
-          fontSize: '12px',
-          marginBottom: tools.length > 0 || status === 'waiting' ? 4 : 0,
-          color: 'var(--vscode-foreground)',
-        }}
-      >
-        {agentLabels?.[agentId] || `Agent #${agentId}`}
-      </div>
-      {tools.map((tool) => (
-        <div key={tool.toolId}>
+    <>
+      {allIds.map((id) => {
+        const ch = officeState.characters.get(id)
+        if (!ch) return null
+
+        const isSelected = selectedId === id
+        const isHovered = hoveredId === id
+        const isSub = ch.isSubagent
+
+        // Only show for hovered or selected agents
+        if (!isSelected && !isHovered) return null
+
+        // Position above character
+        const sittingOffset = ch.state === CharacterState.TYPE ? 6 : 0
+        const screenX = (deviceOffsetX + ch.x * zoom) / dpr
+        const screenY = (deviceOffsetY + (ch.y + sittingOffset - 24) * zoom) / dpr
+
+        // Get activity text
+        let activityText: string
+        if (isSub) {
+          const sub = subagentCharacters.find((s) => s.id === id)
+          activityText = sub ? sub.label : 'Subtask'
+        } else {
+          activityText = getActivityText(id, agentTools, ch.isActive)
+        }
+
+        // Determine dot color
+        const tools = agentTools[id]
+        const hasPermission = tools?.some((t) => t.permissionWait && !t.done)
+        const hasActiveTools = tools?.some((t) => !t.done)
+        const isActive = ch.isActive
+
+        let dotColor: string | null = null
+        if (hasPermission) {
+          dotColor = 'var(--vscode-charts-yellow, #cca700)'
+        } else if (isActive && hasActiveTools) {
+          dotColor = 'var(--vscode-charts-blue, #3794ff)'
+        }
+
+        return (
           <div
+            key={id}
             style={{
+              position: 'absolute',
+              left: screenX,
+              top: screenY - 24,
+              transform: 'translateX(-50%)',
               display: 'flex',
+              flexDirection: 'column',
               alignItems: 'center',
-              gap: 5,
-              opacity: tool.done ? 0.5 : 0.9,
-              lineHeight: '16px',
+              pointerEvents: isSelected ? 'auto' : 'none',
+              zIndex: isSelected ? 110 : 100,
             }}
           >
-            <span
-              className={tool.done ? undefined : 'arcadia-pulse'}
+            <div
               style={{
-                width: 6,
-                height: 6,
-                borderRadius: '50%',
-                background: tool.done
-                  ? 'var(--vscode-charts-green, #89d185)'
-                  : tool.permissionWait
-                    ? 'var(--vscode-charts-yellow, #cca700)'
-                    : 'var(--vscode-charts-blue, #3794ff)',
-                display: 'inline-block',
-                flexShrink: 0,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 5,
+                background: 'rgba(30, 30, 46, 0.88)',
+                border: isSelected
+                  ? '1px solid rgba(255, 255, 255, 0.25)'
+                  : '1px solid rgba(255, 255, 255, 0.1)',
+                borderRadius: 4,
+                padding: isSelected ? '3px 6px 3px 8px' : '3px 8px',
+                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.4)',
+                whiteSpace: 'nowrap',
+                maxWidth: 220,
               }}
-            />
-            <span>{tool.permissionWait && !tool.done ? 'Needs approval' : tool.status}</span>
-          </div>
-          {subs[tool.toolId] && subs[tool.toolId].length > 0 && (
-            <div style={{ marginLeft: 11, borderLeft: '1px solid rgba(255,255,255,0.1)', paddingLeft: 6 }}>
-              {subs[tool.toolId].map((sub) => (
-                <div
-                  key={sub.toolId}
+            >
+              {dotColor && (
+                <span
+                  className={isActive && !hasPermission ? 'arcadia-pulse' : undefined}
                   style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 4,
-                    opacity: sub.done ? 0.4 : 0.8,
-                    lineHeight: '15px',
-                    fontSize: '10px',
+                    width: 6,
+                    height: 6,
+                    borderRadius: '50%',
+                    background: dotColor,
+                    flexShrink: 0,
+                  }}
+                />
+              )}
+              <span
+                style={{
+                  fontSize: isSub ? '10px' : '11px',
+                  fontStyle: isSub ? 'italic' : undefined,
+                  color: 'var(--vscode-foreground)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                }}
+              >
+                {activityText}
+              </span>
+              {isSelected && !isSub && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onCloseAgent(id)
+                  }}
+                  title="Close agent"
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'rgba(255, 255, 255, 0.5)',
+                    cursor: 'pointer',
+                    padding: '0 2px',
+                    fontSize: '13px',
+                    lineHeight: 1,
+                    marginLeft: 2,
+                    flexShrink: 0,
+                  }}
+                  onMouseEnter={(e) => {
+                    (e.currentTarget as HTMLElement).style.color = '#e55'
+                  }}
+                  onMouseLeave={(e) => {
+                    (e.currentTarget as HTMLElement).style.color = 'rgba(255, 255, 255, 0.5)'
                   }}
                 >
-                  <span
-                    className={sub.done ? undefined : 'arcadia-pulse'}
-                    style={{
-                      width: 5,
-                      height: 5,
-                      borderRadius: '50%',
-                      background: sub.done
-                        ? 'var(--vscode-charts-green, #89d185)'
-                        : 'var(--vscode-charts-blue, #3794ff)',
-                      display: 'inline-block',
-                      flexShrink: 0,
-                    }}
-                  />
-                  <span>{sub.status}</span>
-                </div>
-              ))}
+                  ×
+                </button>
+              )}
             </div>
-          )}
-        </div>
-      ))}
-      {status === 'waiting' && !hasActiveTools && (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 5,
-            opacity: 0.85,
-            lineHeight: '16px',
-          }}
-        >
-          <span
-            style={{
-              width: 6,
-              height: 6,
-              borderRadius: '50%',
-              background: 'var(--vscode-charts-yellow, #cca700)',
-              display: 'inline-block',
-              flexShrink: 0,
-            }}
-          />
-          <span>Waiting for input</span>
-        </div>
-      )}
-    </div>
+          </div>
+        )
+      })}
+    </>
   )
 }

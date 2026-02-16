@@ -11,7 +11,6 @@ import { vscode } from '../../vscodeApi.js'
 
 interface OfficeCanvasProps {
   officeState: OfficeState
-  onHover: (agentId: number | null, screenX: number, screenY: number) => void
   onClick: (agentId: number) => void
   isEditMode: boolean
   editorState: EditorState
@@ -26,7 +25,7 @@ interface OfficeCanvasProps {
   panRef: React.MutableRefObject<{ x: number; y: number }>
 }
 
-export function OfficeCanvas({ officeState, onHover, onClick, isEditMode, editorState, onEditorTileAction, onEditorSelectionChange, onDeleteSelected, onRotateSelected, onDragMove, editorTick: _editorTick, zoom, onZoomChange, panRef }: OfficeCanvasProps) {
+export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, onEditorTileAction, onEditorSelectionChange, onDeleteSelected, onRotateSelected, onDragMove, editorTick: _editorTick, zoom, onZoomChange, panRef }: OfficeCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const offsetRef = useRef({ x: 0, y: 0 })
@@ -353,12 +352,8 @@ export function OfficeCanvas({ officeState, onHover, onClick, isEditMode, editor
         canvas.style.cursor = cursor
       }
       officeState.hoveredAgentId = hitId
-      const containerRect = containerRef.current?.getBoundingClientRect()
-      const relX = containerRect ? e.clientX - containerRect.left : pos.screenX
-      const relY = containerRect ? e.clientY - containerRect.top : pos.screenY
-      onHover(hitId, relX, relY)
     },
-    [officeState, onHover, screenToWorld, screenToTile, isEditMode, editorState, onEditorTileAction, panRef, hitTestDeleteButton, hitTestRotateButton],
+    [officeState, screenToWorld, screenToTile, isEditMode, editorState, onEditorTileAction, panRef, hitTestDeleteButton, hitTestRotateButton],
   )
 
   const handleMouseDown = useCallback(
@@ -554,10 +549,7 @@ export function OfficeCanvas({ officeState, onHover, onClick, isEditMode, editor
     editorState.ghostRow = -1
     officeState.hoveredAgentId = null
     officeState.hoveredTile = null
-    if (!isEditMode) {
-      onHover(null, 0, 0)
-    }
-  }, [officeState, onHover, editorState, isEditMode])
+  }, [officeState, editorState])
 
   // Ctrl+wheel to zoom in/out by integer steps
   const handleWheel = useCallback(
