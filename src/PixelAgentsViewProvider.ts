@@ -17,6 +17,7 @@ import { loadFurnitureAssets, sendAssetsToWebview, loadFloorTiles, sendFloorTile
 import { WORKSPACE_KEY_AGENT_SEATS, GLOBAL_KEY_SOUND_ENABLED } from './constants.js';
 import { writeLayoutToFile, readLayoutFromFile, watchLayoutFile } from './layoutPersistence.js';
 import type { LayoutWatcher } from './layoutPersistence.js';
+import { startAntigravityBridge, stopAntigravityBridge } from './antigravityBridge.js';
 
 export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	nextAgentId = { current: 1 };
@@ -42,7 +43,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	// Cross-window layout sync
 	layoutWatcher: LayoutWatcher | null = null;
 
-	constructor(private readonly context: vscode.ExtensionContext) {}
+	constructor(private readonly context: vscode.ExtensionContext) { }
 
 	private get extensionUri(): vscode.Uri {
 		return this.context.extensionUri;
@@ -214,6 +215,19 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 					})();
 				}
 				sendExistingAgents(this.agents, this.context, this.webview);
+
+				// Start Antigravity Bridge as a dedicated agent
+				const antigravityId = this.nextAgentId.current++;
+				startAntigravityBridge(
+					antigravityId,
+					this.agents,
+					this.fileWatchers,
+					this.pollingTimers,
+					this.waitingTimers,
+					this.permissionTimers,
+					this.webview,
+					this.persistAgents,
+				);
 			} else if (message.type === 'openSessionsFolder') {
 				const projectDir = getProjectDirPath();
 				if (projectDir && fs.existsSync(projectDir)) {
@@ -312,6 +326,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	}
 
 	dispose() {
+		stopAntigravityBridge();
 		this.layoutWatcher?.dispose();
 		this.layoutWatcher = null;
 		for (const id of [...this.agents.keys()]) {
